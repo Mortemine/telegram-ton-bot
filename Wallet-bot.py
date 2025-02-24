@@ -1,7 +1,9 @@
 import os
 import sqlite3
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+import asyncio
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.filters import Command
+from aiogram.types import Message
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -12,7 +14,9 @@ ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "").split(',') if id]
 
 # Инициализация бота и диспетчера
 bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
 # Подключение к базе данных
 conn = sqlite3.connect('balances.db')
@@ -36,24 +40,24 @@ def create_wallet(user_id):
     pass
 
 # Регистрация пользователя
-@dp.message_handler(commands=['start'])
-async def start_command(message: types.Message):
+@router.message(Command('start'))
+async def start_command(message: Message):
     user_id = message.from_user.id
-    ref_id = message.get_args()
+    args = message.text.split()[1:]  # ['12345']
+    ref_id = args[0] if args else None
     cursor.execute("INSERT OR IGNORE INTO users (user_id, referral_id) VALUES (?, ?)", (user_id, ref_id if ref_id else None))
     conn.commit()
     await message.reply("Добро пожаловать! Ваш аккаунт успешно создан.")
 
 # Пополнение баланса (заглушка)
-@dp.message_handler(commands=['deposit'])
-async def deposit(message: types.Message):
+@router.message(Command('deposit'))
+async def deposit(message: Message):
     user_id = message.from_user.id
-    # Здесь логика пополнения через TON blockchain
     await message.reply("Для пополнения используйте ваш TON-кошелек.")
 
 # Проверка баланса
-@dp.message_handler(commands=['balance'])
-async def check_balance(message: types.Message):
+@router.message(Command('balance'))
+async def check_balance(message: Message):
     user_id = message.from_user.id
     cursor.execute("SELECT balance_ton, balance_usdt, balance_bac FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
@@ -64,10 +68,10 @@ async def check_balance(message: types.Message):
         await message.reply("Вы не зарегистрированы. Используйте /start.")
 
 # Отправка токенов другому пользователю
-@dp.message_handler(commands=['send'])
-async def send_tokens(message: types.Message):
+@router.message(Command('send'))
+async def send_tokens(message: Message):
     user_id = message.from_user.id
-    args = message.get_args().split()
+    args = message.text.split()[1:]
     if len(args) != 3:
         await message.reply("Используйте формат: /send <user_id> <token> <amount>")
         return
@@ -92,13 +96,13 @@ async def send_tokens(message: types.Message):
     await message.reply(f"Вы успешно отправили {amount} {token.upper()} пользователю {recipient_id}.")
 
 # Административное начисление токенов
-@dp.message_handler(commands=['add_tokens'])
-async def add_tokens(message: types.Message):
+@router.message(Command('add_tokens'))
+async def add_tokens(message: Message):
     user_id = message.from_user.id
     if user_id not in ADMIN_IDS:
         await message.reply("У вас нет прав на выполнение этой команды.")
         return
-    args = message.get_args().split()
+    args = message.text.split()[1:]
     if len(args) != 3:
         await message.reply("Используйте формат: /add_tokens <user_id> <token> <amount>")
         return
@@ -124,8 +128,17 @@ def daily_staking():
     conn.commit()
 
 scheduler.add_job(daily_staking, 'interval', days=1)
-scheduler.start()
 
 # Запуск бота
+async def main():
+    # Запускаем планировщик задач
+    scheduler.start()
+    try:
+        # Запускаем бота
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
+        # Останавливаем планировщик задач при завершении работы бота
+        scheduler.shutdown()
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
