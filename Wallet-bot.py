@@ -1,15 +1,37 @@
 import os
 import sqlite3
 import asyncio
-from aiogram import Bot, Dispatcher, Router, types
+import pymongo
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime
+
 
 # Загрузка конфигурации из .env файла
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "").split(',') if id]
+ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "").split(':') if id]
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+def connect_db():
+    try:
+        mongo_uri = MONGODB_URI
+        
+        if not mongo_uri:
+            raise ValueError("❌ Отсутствует переменная окружения MONGODB_URI")
+        
+        client = pymongo.MongoClient(mongo_uri)
+        db = client["BacTokenData"]
+        print("✅ Подключено к базе BacTokenData")
+
+        return db, client
+    except Exception as error:
+        print("❌ Ошибка подключения к MongoDB:", error)
+        exit(1)
 
 # Инициализация бота и диспетчера
 bot = Bot(token=TOKEN)
@@ -18,27 +40,31 @@ router = Router()
 dp.include_router(router)
 
 # Подключение к базе данных
-conn = sqlite3.connect('balances.db')
-cursor = conn.cursor()
+db, client = connect_db()
+collection = db['bactokenbotusers']
 
-# Создание таблиц, если их нет
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    balance_ton REAL DEFAULT 0,
-    balance_usdt REAL DEFAULT 0,
-    balance_bac REAL DEFAULT 0,
-    referral_id INTEGER
-)
-''')
-conn.commit()
+def get_data_with_struct(user_id, phone_number, username, balances, transactions):
+    return {
+        "user_id": user_id,
+        "registration_date": datetime.utcnow(),
+        "phone_number": phone_number,
+        "username": username,
+        "balances": balances,
+        "transactions": transactions
+    }
+
+class AdminActions(StatesGroup):
+    WAITING_FOR_ADD_TOKENS = State()
+
+class UserActions(StatesGroup):
+    WAITING_FOR_ADD_TOKENS = State()
 
 # Функция создания кошелька (имитация)
 def create_wallet(user_id):
     pass
 
 # Создание клавиатуры
-def get_keyboard():
+def base_keyboard():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Проверить баланс")],
@@ -50,23 +76,47 @@ def get_keyboard():
     )
     return keyboard
 
+def reg_keyboard():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Регистрация", request_contact=True)],
+        ],
+        resize_keyboard=True  # Адаптируем размер клавиатуры
+    )
+    return keyboard
+
 # Приветственное сообщение
 @router.message(lambda message: message.text == "/start")
 async def start_command(message: Message):
-    user_id = message.from_user.id
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    await message.reply("Добро пожаловать! Выберите действие:", reply_markup=get_keyboard())
+    user = collection.find_one({"user_id": message.from_user.id})
+
+    if user:
+        await message.reply("Добро пожаловать! Выберите действие:", reply_markup=base_keyboard())
+    else:
+        await message.reply("Добро пожаловать! Для дальнейшей работы зарегистрируйтесь.", reply_markup=reg_keyboard())
+
+@dp.message(F.contact)
+async def start_command(message: Message):
+    user = collection.find_one({"user_id": message.from_user.id})
+    if not user:
+        user_id = message.from_user.id
+        phone_number = message.contact.phone_number
+        username = message.from_user.username
+        balances = {"TON": 0, "USDT": 0, "BAC": 0}
+        transactions = []
+        data = get_data_with_struct(user_id, phone_number, username, balances, transactions)
+        collection.insert_one(data)
+        await message.reply("Регистрация успешна.", reply_markup=base_keyboard())
+    else:
+        await message.reply("Вы уже зарегистрированы.", reply_markup=base_keyboard())
 
 # Проверка баланса
 @router.message(lambda message: message.text == "Проверить баланс")
 async def check_balance(message: Message):
     user_id = message.from_user.id
-    cursor.execute("SELECT balance_ton, balance_usdt, balance_bac FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    if result:
-        ton, usdt, bac = result
-        await message.reply(f"Ваш баланс:\nTON: {ton}\nUSDT: {usdt}\nBAC: {bac}")
+    balance = collection.find_one({"user_id": user_id})["balances"]
+    if balance:
+        await message.reply(f"Ваш баланс:\nTON: {balance['TON']}\nUSDT: {balance['USDT']}\nBAC: {balance['BAC']}")
     else:
         await message.reply("Вы не зарегистрированы. Используйте /start.")
 
@@ -78,21 +128,47 @@ async def deposit(message: Message):
 
 # Отправка токенов другому пользователю
 @router.message(lambda message: message.text == "Отправить токены")
-async def send_tokens(message: Message):
-    await message.reply("Введите данные в формате: <user_id> <token> <amount>")
+async def send_tokens(message: Message, state: FSMContext):
+    await message.reply("Для перевода введите данные в формате: <user_id> <token> <amount>")
+    await state.set_state(UserActions.WAITING_FOR_ADD_TOKENS)
 
 # Административное начисление токенов
 @router.message(lambda message: message.text == "Начислить токены (админ)")
-async def add_tokens(message: Message):
+async def add_tokens(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id not in ADMIN_IDS:
         await message.reply("У вас нет прав на выполнение этой команды.")
         return
-    await message.reply("Введите данные в формате: <user_id> <token> <amount>")
+    await message.reply("Для начисления введите данные в формате: <user_id> <token> <amount>")
+    # Устанавливаем состояние ожидания данных для начисления
+    await state.set_state(AdminActions.WAITING_FOR_ADD_TOKENS)
 
 # Обработка ввода данных для отправки или начисления токенов
-@router.message()
-async def process_input(message: Message):
+@router.message(AdminActions.WAITING_FOR_ADD_TOKENS)
+async def process_admin_add_tokens(message: Message, state: FSMContext):
+    text = message.text.split()
+    if len(text) != 3:
+        await message.reply("Неверный формат данных. Используйте: <user_id> <token> <amount>")
+        return
+    try:
+        target_id = int(text[0])
+        token = text[1].lower()
+        amount = float(text[2])
+    except ValueError:
+        await message.reply("Неверный формат данных.")
+        return
+    if token not in ['ton', 'usdt', 'bac']:
+        await message.reply("Поддерживаются только токены: TON, USDT, BAC.")
+        return
+
+    # Выполняем начисление
+    collection.update_one({"user_id": target_id}, {"$inc": {f"balances.{token.upper()}": amount}})
+    await message.reply(f"Начислено {amount} {token.upper()} пользователю {target_id}.")
+    # Сбрасываем состояние
+    await state.clear()
+
+@router.message(UserActions.WAITING_FOR_ADD_TOKENS)
+async def process_input(message: Message, state: FSMContext):
     user_id = message.from_user.id
     text = message.text.split()
     if len(text) != 3:
@@ -109,22 +185,17 @@ async def process_input(message: Message):
         await message.reply("Поддерживаются только токены: TON, USDT, BAC.")
         return
 
-    # Если это админская команда
-    if message.text.startswith("Начислить"):
-        cursor.execute(f"UPDATE users SET balance_{token} = balance_{token} + ? WHERE user_id = ?", (amount, target_id))
-        conn.commit()
-        await message.reply(f"Начислено {amount} {token.upper()} пользователю {target_id}.")
-    else:
-        # Проверка баланса отправителя
-        cursor.execute(f"SELECT balance_{token} FROM users WHERE user_id = ?", (user_id,))
-        sender_balance = cursor.fetchone()
-        if not sender_balance or sender_balance[0] < amount:
-            await message.reply("Недостаточно средств.")
-            return
-        cursor.execute(f"UPDATE users SET balance_{token} = balance_{token} - ? WHERE user_id = ?", (amount, user_id))
-        cursor.execute(f"UPDATE users SET balance_{token} = balance_{token} + ? WHERE user_id = ?", (amount, target_id))
-        conn.commit()
-        await message.reply(f"Вы успешно отправили {amount} {token.upper()} пользователю {target_id}.")
+    # Проверка баланса отправителя
+    sender_balance = collection.find_one({"user_id": user_id})
+    if not sender_balance or sender_balance.get("balances", {}).get(token.upper(), 0) < amount:
+        await message.reply("Недостаточно средств.")
+        return
+
+    # Выполняем перевод
+    collection.update_one({"user_id": user_id}, {"$inc": {f"balances.{token.upper()}": -amount}})
+    collection.update_one({"user_id": target_id}, {"$inc": {f"balances.{token.upper()}": amount}})
+    await message.reply(f"Вы успешно отправили {amount} {token.upper()} пользователю {target_id}.")
+    await state.clear()
 
 # Ежедневное начисление процентов по стейкингу
 scheduler = AsyncIOScheduler()
