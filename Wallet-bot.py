@@ -226,7 +226,7 @@ async def choose_recipient_type(message: Message, state: FSMContext):
 # Обработка ввода данных получателя
 @router.message(SendTokensStates.ENTER_RECIPIENT)
 async def enter_recipient(message: Message, state: FSMContext):
-    if message.text == Buttons.back or Buttons.cancel:
+    if message.text == Buttons.back or message.text == Buttons.cancel:
         await message.reply("Выберите способ:", reply_markup=recipient_type_keyboard())
         await state.set_state(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
         return
@@ -243,7 +243,6 @@ async def enter_recipient(message: Message, state: FSMContext):
     elif recipient_type == Buttons.send_type_username:
         username = message.text.lower().replace('@', '')
         user = collection.find_one({"username": username})
-        print(username)
     if not user:
         await message.reply("Пользователь не найден. Попробуйте снова.")
         return
