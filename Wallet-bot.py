@@ -248,7 +248,7 @@ async def enter_recipient(message: Message, state: FSMContext):
         await message.reply("Пользователь не найден. Попробуйте снова.")
         return
 
-    await state.update_data(recipient=message.text.lower())
+    await state.update_data(recipient=message.text.lower().replace('@', ''))
     await message.reply("Выберите валюту:", reply_markup=currency_keyboard())
     await state.set_state(SendTokensStates.CHOOSE_CURRENCY)
 
@@ -320,7 +320,7 @@ async def enter_amount(message: Message, state: FSMContext):
     await message.reply(f"Перевод {amount} {currency} выполнен успешно.")
     await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
     username = collection.find_one({"user_id": user_id})['username']
-    await bot.send_message(recipient_id, f"Вам переведено {currency}: {amount} от {username if username else user_id}")
+    await bot.send_message(recipient_id, f"Вам переведено {currency}: {amount} от {'@'+username if username else user_id}")
 
     await state.clear()
 
