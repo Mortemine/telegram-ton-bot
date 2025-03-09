@@ -70,6 +70,7 @@ class Buttons:
 
 recipient_types = {Buttons.send_type_id: "user_id", Buttons.send_type_phone: "phone_number",
                    Buttons.send_type_username: "username"}
+currency_types = {Buttons.ton: "TON", Buttons.usdt: "USDT", Buttons.bac: "BAC"}
 
 
 def get_data_with_struct(user_id, phone_number, username, balances, transactions):
@@ -247,7 +248,7 @@ async def enter_recipient(message: Message, state: FSMContext):
         await message.reply("Пользователь не найден. Попробуйте снова.")
         return
 
-    await state.update_data(recipient=message.text)
+    await state.update_data(recipient=message.text.lower())
     await message.reply("Выберите валюту:", reply_markup=currency_keyboard())
     await state.set_state(SendTokensStates.CHOOSE_CURRENCY)
 
@@ -288,7 +289,7 @@ async def enter_amount(message: Message, state: FSMContext):
 
     data = await state.get_data()
     recipient = data.get("recipient")
-    currency = data.get("currency")
+    currency = currency_types[data.get("currency")]
     user_id = message.from_user.id
     recipient_type = recipient_types[data.get("recipient_type")]
 
