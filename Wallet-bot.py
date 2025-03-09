@@ -12,7 +12,6 @@ from datetime import datetime
 # Загрузка конфигурации из .env файла
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_IDS = [int(adm_id) for adm_id in os.getenv("ADMIN_IDS", "").split(':') if id]
 MONGODB_URI = os.getenv("MONGODB_URI")
 
 
@@ -41,7 +40,36 @@ dp.include_router(router)
 db, client = connect_db()
 collection = db['bactokenbotusers']
 
-recipient_types = {"ID": "user_id", "Номер телефона": "phone_number", "Username": "username"}
+
+class Buttons:
+    # Базовая клавиатура
+    check_balance = '💰 Проверить баланс'
+    top_up_balance = '➕ Пополнить баланс'
+    add_tokens_admin = '👑 Начислить токены (админ)'
+    send_tokens = '📤 Отправить токены'
+    check_id = '🆔 Посмотреть мой ID'
+    bac_services = '🌐 Сервисы BAC Community'
+
+    # Регистрация
+    registration = '📝 Регистрация'
+
+    # Типы отправки
+    send_type_id = '🆔 ID'
+    send_type_username = '@ Username'
+    send_type_phone = '📞 Номер телефона'
+
+    # Валюты
+    ton = '💎 TON'
+    usdt = '💲 USDT'
+    bac = '🌐 BAC'
+
+    # Прочее
+    back = '🔙 Назад'
+    cancel = '✖ Отмена'
+
+
+recipient_types = {Buttons.send_type_id: "user_id", Buttons.send_type_phone: "phone_number",
+                   Buttons.send_type_username: "username"}
 
 
 def get_data_with_struct(user_id, phone_number, username, balances, transactions):
@@ -50,9 +78,15 @@ def get_data_with_struct(user_id, phone_number, username, balances, transactions
         "registration_date": datetime.now(),
         "phone_number": phone_number,
         "username": username,
+        "isAdmin": False,
         "balances": balances,
         "transactions": transactions
     }
+
+
+def is_admin(db_collection, user_id):
+    adm_flag = db_collection.find_one({"user_id": user_id})["isAdmin"]
+    return adm_flag
 
 
 class AdminActions(StatesGroup):
@@ -67,10 +101,14 @@ def create_wallet(user_id):
     pass
 
 
+def format_thousands(number):
+    return f"{number:,}".replace(',', ' ')
+
+
 def reg_keyboard():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Регистрация", request_contact=True)],
+            [KeyboardButton(text=Buttons.registration, request_contact=True)],
         ],
         resize_keyboard=True
     )
@@ -88,8 +126,8 @@ class SendTokensStates(StatesGroup):
 def recipient_type_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="ID"), KeyboardButton(text="Номер телефона")],
-            [KeyboardButton(text="Username"), KeyboardButton(text="🔙 Назад")]
+            [KeyboardButton(text=Buttons.send_type_id), KeyboardButton(text=Buttons.send_type_phone)],
+            [KeyboardButton(text=Buttons.send_type_username), KeyboardButton(text=Buttons.back)]
         ],
         resize_keyboard=True
     )
@@ -98,8 +136,8 @@ def recipient_type_keyboard():
 def currency_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="TON"), KeyboardButton(text="USDT")],
-            [KeyboardButton(text="BAC"), KeyboardButton(text="🔙 Назад")]
+            [KeyboardButton(text=Buttons.ton), KeyboardButton(text=Buttons.usdt)],
+            [KeyboardButton(text=Buttons.bac), KeyboardButton(text=Buttons.back)]
         ],
         resize_keyboard=True
     )
@@ -108,10 +146,23 @@ def currency_keyboard():
 def base_keyboard():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="💰 Проверить баланс"), KeyboardButton(text="➕ Пополнить баланс")],
-            [KeyboardButton(text="📤 Отправить токены"), KeyboardButton(text="🆔 Посмотреть мой ID")],
-            [KeyboardButton(text="🌐 Сервисы BAC Community")],
-            [KeyboardButton(text="👑 Начислить токены (админ)")]
+            [KeyboardButton(text=Buttons.check_balance), KeyboardButton(text=Buttons.top_up_balance)],
+            [KeyboardButton(text=Buttons.send_tokens), KeyboardButton(text=Buttons.check_id)],
+            [KeyboardButton(text=Buttons.bac_services)]
+
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+
+def admin_keyboard():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=Buttons.check_balance), KeyboardButton(text=Buttons.top_up_balance)],
+            [KeyboardButton(text=Buttons.send_tokens), KeyboardButton(text=Buttons.check_id)],
+            [KeyboardButton(text=Buttons.bac_services)],
+            [KeyboardButton(text=Buttons.add_tokens_admin)]
 
         ],
         resize_keyboard=True
@@ -122,15 +173,28 @@ def base_keyboard():
 def back_keyboard():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Отмена")],
+            [KeyboardButton(text=Buttons.cancel)],
         ],
         resize_keyboard=True
     )
     return keyboard
 
 
+@router.message(lambda message: message.text == "/start")
+async def start_command(message: Message):
+    user = collection.find_one({"user_id": message.from_user.id})
+
+    if user:
+        if is_admin(collection, message.from_user.id):
+            await message.reply("Добро пожаловать! Выберите действие:", reply_markup=admin_keyboard())
+        else:
+            await message.reply("Добро пожаловать! Выберите действие:", reply_markup=base_keyboard())
+    else:
+        await message.reply("Добро пожаловать! Для дальнейшей работы зарегистрируйтесь.", reply_markup=reg_keyboard())
+
+
 # Начало процесса отправки токенов
-@router.message(F.text == "📤 Отправить токены")
+@router.message(F.text == Buttons.send_tokens)
 async def start_send_tokens(message: Message, state: FSMContext):
     await message.reply("Выберите способ:", reply_markup=recipient_type_keyboard())
     await state.set_state(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
@@ -139,29 +203,30 @@ async def start_send_tokens(message: Message, state: FSMContext):
 # Обработка выбора типа получателя
 @router.message(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
 async def choose_recipient_type(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад":
+    if message.text == Buttons.back:
         await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
         await state.clear()
         return
 
-    if message.text not in ["ID", "Номер телефона", "Username"]:
+    if message.text not in [Buttons.send_type_id, Buttons.send_type_phone, Buttons.send_type_username]:
         await message.reply("Пожалуйста, выберите один из предложенных вариантов.")
         return
 
     await state.update_data(recipient_type=message.text)
-    if message.text == "ID":
-        await message.reply(f"Введите id пользователя в телеграм (можно узнать в главном меню)")
-    elif message.text == "Номер телефона":
-        await message.reply(f"Введите номер телефона получателя в формате 7ХХХХХХХХХХ")
-    elif message.text == "Username":
-        await message.reply(f"Введите username пользователя в телеграм (без @)")
+    if message.text == Buttons.send_type_id:
+        await message.reply(f"Введите id пользователя в телеграм (можно узнать в главном меню)",
+                            reply_markup=back_keyboard())
+    elif message.text == Buttons.send_type_phone:
+        await message.reply(f"Введите номер телефона получателя в формате 7ХХХХХХХХХХ", reply_markup=back_keyboard())
+    elif message.text == Buttons.send_type_username:
+        await message.reply(f"Введите username пользователя в телеграм", reply_markup=back_keyboard())
     await state.set_state(SendTokensStates.ENTER_RECIPIENT)
 
 
 # Обработка ввода данных получателя
 @router.message(SendTokensStates.ENTER_RECIPIENT)
 async def enter_recipient(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад":
+    if message.text == Buttons.back or Buttons.cancel:
         await message.reply("Выберите способ:", reply_markup=recipient_type_keyboard())
         await state.set_state(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
         return
@@ -171,12 +236,14 @@ async def enter_recipient(message: Message, state: FSMContext):
     user = None
 
     # Проверка существования пользователя в базе
-    if recipient_type == 'ID':
+    if recipient_type == Buttons.send_type_id:
         user = collection.find_one({"user_id": message.text})
-    elif recipient_type == 'Номер телефона':
+    elif recipient_type == Buttons.send_type_phone:
         user = collection.find_one({"phone_number": message.text})
-    elif recipient_type == 'Username':
-        user = collection.find_one({"username": message.text})
+    elif recipient_type == Buttons.send_type_username:
+        username = message.text.lower().replace('@', '')
+        user = collection.find_one({"username": username})
+        print(username)
     if not user:
         await message.reply("Пользователь не найден. Попробуйте снова.")
         return
@@ -189,24 +256,24 @@ async def enter_recipient(message: Message, state: FSMContext):
 # Обработка выбора валюты
 @router.message(SendTokensStates.CHOOSE_CURRENCY)
 async def choose_currency(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад":
+    if message.text == Buttons.back:
         await message.reply("Выберите способ:", reply_markup=recipient_type_keyboard())
         await state.set_state(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
         return
 
-    if message.text not in ["TON", "USDT", "BAC"]:
+    if message.text not in [Buttons.ton, Buttons.usdt, Buttons.bac]:
         await message.reply("Пожалуйста, выберите одну из поддерживаемых валют.")
         return
 
     await state.update_data(currency=message.text)
-    await message.reply("Введите количество:")
+    await message.reply("Введите количество:", reply_markup=back_keyboard())
     await state.set_state(SendTokensStates.ENTER_AMOUNT)
 
 
 # Обработка ввода количества
 @router.message(SendTokensStates.ENTER_AMOUNT)
 async def enter_amount(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад":
+    if message.text == Buttons.back or message.text == Buttons.cancel:
         # Возвращаемся к выбору валюты
         await message.reply("Выберите валюту:", reply_markup=currency_keyboard())
         await state.set_state(SendTokensStates.CHOOSE_CURRENCY)
@@ -252,24 +319,15 @@ async def enter_amount(message: Message, state: FSMContext):
                                                                                    "Date": datetime.now()}}})
     await message.reply(f"Перевод {amount} {currency} выполнен успешно.")
     await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
-    await bot.send_message(recipient_id, f"Вам начислены токены {currency}: {amount} от {user_id}")
+    username = collection.find_one({"user_id": user_id})['username']
+    await bot.send_message(recipient_id, f"Вам переведено {currency}: {amount} от {username if username else user_id}")
 
     await state.clear()
 
 
-@router.message(lambda message: message.text == "🆔 Посмотреть мой ID")
-async def send_tokens(message: Message):
+@router.message(lambda message: message.text == Buttons.check_id)
+async def show_id(message: Message):
     await message.reply(f"Ваш ID: {message.from_user.id}")
-
-
-@router.message(lambda message: message.text == "/start")
-async def start_command(message: Message):
-    user = collection.find_one({"user_id": message.from_user.id})
-
-    if user:
-        await message.reply("Добро пожаловать! Выберите действие:", reply_markup=base_keyboard())
-    else:
-        await message.reply("Добро пожаловать! Для дальнейшей работы зарегистрируйтесь.", reply_markup=reg_keyboard())
 
 
 @dp.message(F.contact)
@@ -278,7 +336,7 @@ async def start_command(message: Message):
     if not user:
         user_id = message.from_user.id
         phone_number = message.contact.phone_number
-        username = message.from_user.username
+        username = message.from_user.username.lower() if message.from_user.username else ""
         balances = {"TON": 0.0, "USDT": 0.0, "BAC": 0.0}
         transactions = []
         data = get_data_with_struct(user_id, phone_number, username, balances, transactions)
@@ -288,25 +346,26 @@ async def start_command(message: Message):
         await message.reply("Вы уже зарегистрированы.", reply_markup=base_keyboard())
 
 
-@router.message(lambda message: message.text == "💰 Проверить баланс")
+@router.message(lambda message: message.text == Buttons.check_balance)
 async def check_balance(message: Message):
     user_id = message.from_user.id
     balance = collection.find_one({"user_id": user_id})["balances"]
     if balance:
-        await message.reply(f"Ваш баланс:\nTON: {balance['TON']}\nUSDT: {balance['USDT']}\nBAC: {balance['BAC']}")
+        await message.reply(f"Ваш баланс:\n{Buttons.ton}: {format_thousands(balance['TON'])}\n{Buttons.usdt}:"
+                            f" {format_thousands(balance['USDT'])}\n{Buttons.bac}: {format_thousands(balance['BAC'])}")
     else:
         await message.reply("Вы не зарегистрированы. Используйте /start.")
 
 
-@router.message(lambda message: message.text == "➕ Пополнить баланс")
+@router.message(lambda message: message.text == Buttons.top_up_balance)
 async def deposit(message: Message):
     await message.reply("Для пополнения используйте ваш TON-кошелек.")
 
 
-@router.message(lambda message: message.text == "👑 Начислить токены (админ)")
+@router.message(lambda message: message.text == Buttons.add_tokens_admin)
 async def add_tokens(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    if user_id not in ADMIN_IDS:
+    if not is_admin(collection, user_id):
         await message.reply("У вас нет прав на выполнение этой команды.")
         return
     await message.reply("Для начисления введите данные в формате: <user_id> <token> <amount>",
@@ -318,7 +377,7 @@ async def add_tokens(message: Message, state: FSMContext):
 # Обработка ввода данных для отправки или начисления токенов
 @router.message(AdminActions.WAITING_FOR_ADD_TOKENS)
 async def process_admin_add_tokens(message: Message, state: FSMContext):
-    if message.text == "Отмена":
+    if message.text == Buttons.cancel:
         await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
         await state.clear()
         return
@@ -333,7 +392,7 @@ async def process_admin_add_tokens(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("Неверный формат данных.")
         return
-    if token not in ['TON', 'USDT', 'BAC']:
+    if token not in [Buttons.ton, Buttons.usdt, Buttons.bac]:
         await message.reply("Поддерживаются только токены: TON, USDT, BAC.")
         return
 
