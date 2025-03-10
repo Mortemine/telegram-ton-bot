@@ -181,15 +181,18 @@ def back_keyboard():
     return keyboard
 
 
+def get_user_keyboard(db_collection, user):
+    if is_admin(db_collection, user):
+        return admin_keyboard()
+    return base_keyboard()
+
+
 @router.message(lambda message: message.text == "/start")
 async def start_command(message: Message):
     user = collection.find_one({"user_id": message.from_user.id})
 
     if user:
-        if is_admin(collection, message.from_user.id):
-            await message.reply("Добро пожаловать! Выберите действие:", reply_markup=admin_keyboard())
-        else:
-            await message.reply("Добро пожаловать! Выберите действие:", reply_markup=base_keyboard())
+        await message.reply("Добро пожаловать! Выберите действие:", reply_markup=get_user_keyboard(collection, message.from_user.id))
     else:
         await message.reply("Добро пожаловать! Для дальнейшей работы зарегистрируйтесь.", reply_markup=reg_keyboard())
 
@@ -205,7 +208,7 @@ async def start_send_tokens(message: Message, state: FSMContext):
 @router.message(SendTokensStates.CHOOSE_RECIPIENT_TYPE)
 async def choose_recipient_type(message: Message, state: FSMContext):
     if message.text == Buttons.back:
-        await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
+        await message.reply("Возвращаемся в главное меню.", reply_markup=get_user_keyboard(collection, message.from_user.id))
         await state.clear()
         return
 
@@ -318,7 +321,7 @@ async def enter_amount(message: Message, state: FSMContext):
                                                                                    "New_balance": current_balance + amount,
                                                                                    "Date": datetime.now()}}})
     await message.reply(f"Перевод {amount} {currency} выполнен успешно.")
-    await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
+    await message.reply("Возвращаемся в главное меню.", reply_markup=get_user_keyboard(collection, message.from_user.id))
     username = collection.find_one({"user_id": user_id})['username']
     await bot.send_message(recipient_id, f"Вам переведено {currency}: {amount} от {'@'+username if username else user_id}")
 
@@ -343,7 +346,7 @@ async def start_command(message: Message):
         collection.insert_one(data)
         await message.reply("Регистрация успешна.", reply_markup=base_keyboard())
     else:
-        await message.reply("Вы уже зарегистрированы.", reply_markup=base_keyboard())
+        await message.reply("Вы уже зарегистрированы.", reply_markup=get_user_keyboard(collection, message.from_user.id))
 
 
 @router.message(lambda message: message.text == Buttons.check_balance)
@@ -378,7 +381,7 @@ async def add_tokens(message: Message, state: FSMContext):
 @router.message(AdminActions.WAITING_FOR_ADD_TOKENS)
 async def process_admin_add_tokens(message: Message, state: FSMContext):
     if message.text == Buttons.cancel:
-        await message.reply("Возвращаемся в главное меню.", reply_markup=base_keyboard())
+        await message.reply("Возвращаемся в главное меню.", reply_markup=get_user_keyboard(collection, message.from_user.id))
         await state.clear()
         return
     text = message.text.split()
